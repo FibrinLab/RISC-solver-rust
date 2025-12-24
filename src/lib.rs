@@ -6,11 +6,22 @@ pub mod types {
     
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Input {
+        // MatMul fields (backward compatible - current format)
         pub matrix_a: Vec<Vec<f32>>,
         pub matrix_b: Vec<Vec<f32>>,
+        
+        // Optional workload type for future workloads
+        #[serde(default)]
+        pub workload_type: Option<String>, // "matmul", "convolution", "attention", "inference"
+        
         pub precision: String, // "fp32", "fp16", "int8"
         #[serde(default)]
         pub metadata: Option<InputMetadata>,
+        
+        // Future workload-specific fields will be added here when schemas are provided
+        // For example:
+        // pub convolution_params: Option<ConvolutionParams>,
+        // pub attention_params: Option<AttentionParams>,
     }
     
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,7 +58,7 @@ pub mod types {
     }
 }
 
-fn matmul_fp32_optimized(a: &[Vec<f32>], b: &[Vec<f32>]) -> Vec<Vec<f32>> {
+pub fn matmul_fp32_optimized(a: &[Vec<f32>], b: &[Vec<f32>]) -> Vec<Vec<f32>> {
     let rows_a = a.len();
     let cols_a = a[0].len();
     let cols_b = b[0].len();
@@ -176,11 +187,31 @@ fn estimate_memory_usage(rows_a: usize, cols_a: usize, rows_b: usize, cols_b: us
 }
 
 // Shared computation function that can be used by both CLI and API
-pub fn compute_matmul(input: types::Input) -> Result<types::Output, String> {
-    let rows_a = input.matrix_a.len();
-    let cols_a = input.matrix_a[0].len();
-    let rows_b = input.matrix_b.len();
-    let cols_b = input.matrix_b[0].len();
+pub fn compute_workload(input: types::Input) -> Result<types::Output, String> {
+    let workload_type = input.workload_type.as_deref().unwrap_or("matmul");
+    
+    match workload_type {
+        "matmul" => {
+            compute_matmul_internal(input.matrix_a, input.matrix_b, &input.precision, &input.metadata)
+        }
+        // Future workloads will be handled here when schemas are provided:
+        // "convolution" => { compute_convolution(...) }
+        // "attention" => { compute_attention(...) }
+        // "inference" => { compute_inference(...) }
+        _ => Err(format!("Unsupported workload type: {}. Currently only 'matmul' is supported.", workload_type)),
+    }
+}
+
+fn compute_matmul_internal(
+    matrix_a: Vec<Vec<f32>>,
+    matrix_b: Vec<Vec<f32>>,
+    precision: &str,
+    metadata: &Option<types::InputMetadata>,
+) -> Result<types::Output, String> {
+    let rows_a = matrix_a.len();
+    let cols_a = matrix_a[0].len();
+    let rows_b = matrix_b.len();
+    let cols_b = matrix_b[0].len();
     
     if cols_a != rows_b {
         return Err(format!("Matrix dimensions incompatible: A is {}x{}, B is {}x{}", 
@@ -189,11 +220,11 @@ pub fn compute_matmul(input: types::Input) -> Result<types::Output, String> {
     
     // Perform matrix multiplication with timing
     let start = Instant::now();
-    let result = match input.precision.as_str() {
-        "fp32" => matmul_fp32_optimized(&input.matrix_a, &input.matrix_b),
-        "fp16" => matmul_fp16(&input.matrix_a, &input.matrix_b),
-        "int8" => matmul_int8(&input.matrix_a, &input.matrix_b),
-        _ => return Err(format!("Unsupported precision: {}", input.precision)),
+    let result = match precision {
+        "fp32" => matmul_fp32_optimized(&matrix_a, &matrix_b),
+        "fp16" => matmul_fp16(&matrix_a, &matrix_b),
+        "int8" => matmul_int8(&matrix_a, &matrix_b),
+        _ => return Err(format!("Unsupported precision: {}", precision)),
     };
     let elapsed = start.elapsed();
     
@@ -220,13 +251,18 @@ pub fn compute_matmul(input: types::Input) -> Result<types::Output, String> {
             memory_usage_mb,
         },
         metadata: types::OutputMetadata {
-            precision: input.precision.clone(),
+            precision: precision.to_string(),
             matrix_a_shape: (rows_a, cols_a),
             matrix_b_shape: (rows_b, cols_b),
             result_shape: (rows_a, cols_b),
-            compiler_flags: input.metadata.as_ref().and_then(|m| m.compiler_flags.clone()),
-            libraries: input.metadata.as_ref().and_then(|m| m.libraries.clone()),
+            compiler_flags: metadata.as_ref().and_then(|m| m.compiler_flags.clone()),
+            libraries: metadata.as_ref().and_then(|m| m.libraries.clone()),
         },
     })
+}
+
+// Keep old function name for backward compatibility
+pub fn compute_matmul(input: types::Input) -> Result<types::Output, String> {
+    compute_workload(input)
 }
 

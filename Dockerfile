@@ -21,26 +21,16 @@ RUN rustup default stable
 # Set working directory
 WORKDIR /app
 
-# Copy manifest files (Cargo.lock is optional, will be generated if missing)
-COPY Cargo.toml ./
+# Copy everything
+COPY . .
 
-# Create a dummy source file to build dependencies
-RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
-    rm -rf src
-
-# Copy actual source code
-COPY src ./src
-
-# Build the actual application
-RUN touch src/main.rs && \
-    cargo build --release
+# Build the MatMul solver
+RUN cargo build --release --bin matmul-solver
 
 # Runtime stage - use the same base image
 FROM ghcr.io/tenstorrent/tt-xla/tt-xla-ird-ubuntu-22-04:latest
 
-# Install minimal runtime dependencies if needed
+# Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -52,4 +42,3 @@ COPY --from=builder /app/target/release/matmul-solver /usr/local/bin/matmul-solv
 
 # Set entrypoint
 ENTRYPOINT ["matmul-solver"]
-

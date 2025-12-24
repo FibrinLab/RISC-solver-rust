@@ -1,83 +1,52 @@
 # MatMul Solver - Amadeus Genesis Hack
 
-A high-performance matrix multiplication solver for the Amadeus Genesis Hack Hard Hack competition, supporting multiple precision formats (fp32, fp16, int8) with comprehensive benchmarking and correctness verification.
+Simple MatMul benchmark solver for the Hard Hack competition.
 
-## Features
+## What It Does
 
-- **Multiple Precision Support**: fp32, fp16, and int8
-- **Optimized Implementations**: Cache-friendly algorithms for better performance
-- **Comprehensive Metrics**: Latency, throughput, ops/sec, memory usage
-- **Correctness Verification**: SHA-256 hash of results
-- **Docker Support**: Fully containerized for reproducibility
-- **JSON I/O**: Standardized input/output format
+Solves benchmark workloads for the Hard Hack competition:
 
-## Building
+**Currently Supported:**
+- ✅ **Matrix Multiplication (MatMul)** - All precisions (fp32, fp16, int8)
 
-### Local Build
+**Ready for Future Workloads** (when schemas are provided):
+- Convolution kernels
+- Attention-style workloads  
+- Small model inference microbenchmarks
+
+Takes JSON input, computes the workload, and outputs:
+- Result data
+- Performance metrics (latency, throughput, ops/sec)
+- Result hash (for correctness verification)
+
+## Quick Start
+
+### Local Build & Run
 
 ```bash
-cargo build --release
+# Build
+cargo build --release --bin matmul-solver
+
+# Run
+cargo run --release --bin matmul-solver -- --input input.json --output output.json
 ```
 
-### Docker Build
-
-The Docker image is built for RISC-V architecture using the TensTorrent base image provided by the hackathon organizers:
+### Docker Build & Run
 
 ```bash
+# Build
 docker build -t matmul-solver .
-```
 
-**Note**: This uses the RISC-V base image `ghcr.io/tenstorrent/tt-xla/tt-xla-ird-ubuntu-22-04:latest` as required for the benchmarking competition.
-
-## Usage
-
-### Local Execution
-
-```bash
-# Using default input.json and output.json
-cargo run --release
-
-# Specify custom input/output files
-cargo run --release -- --input custom_input.json --output custom_output.json
-```
-
-### Docker Execution
-
-**Note**: This image is built for RISC-V architecture. It will run on the hackathon's RISC-V benchmarking infrastructure. On non-RISC-V systems, you may need to use emulation or wait for the official benchmarking environment.
-
-#### On RISC-V Hardware/Emulation:
-
-```bash
-# Mount input file and output directory
+# Run
 docker run --rm \
   -v $(pwd)/input.json:/app/input.json \
   -v $(pwd):/app/output \
-  matmul-solver-riscv \
+  matmul-solver \
   --input /app/input.json \
   --output /app/output/output.json
 ```
 
-#### For Hackathon Submission:
-
-The hackathon organizers will run your container on their RISC-V infrastructure. Make sure your `input.json` follows the expected format, and the container will produce `output.json` with metrics and results.
-
-#### Testing Locally (x86/ARM):
-
-To test the logic locally before submission, you can build and run the Rust code directly:
-
-```bash
-# Build locally
-cargo build --release
-
-# Run with your input
-cargo run --release -- --input input.json --output output.json
-```
-
-This will help verify your implementation works correctly, though performance metrics will differ from RISC-V hardware.
-
 ## Input Format
-
-The input JSON file should follow this structure:
 
 ```json
 {
@@ -85,23 +54,16 @@ The input JSON file should follow this structure:
   "matrix_b": [[5.0, 6.0], [7.0, 8.0]],
   "precision": "fp32",
   "metadata": {
-    "compiler_flags": "-O3 -march=native",
-    "libraries": ["rayon"],
+    "compiler_flags": "-O3",
+    "libraries": [],
     "cache_enabled": true
   }
 }
 ```
 
-### Fields
-
-- `matrix_a`: First matrix (2D array of floats)
-- `matrix_b`: Second matrix (2D array of floats)
-- `precision`: One of "fp32", "fp16", or "int8"
-- `metadata` (optional): Additional metadata about the run
+**Supported precisions:** `fp32`, `fp16`, `int8`
 
 ## Output Format
-
-The output JSON file contains:
 
 ```json
 {
@@ -117,42 +79,69 @@ The output JSON file contains:
     "precision": "fp32",
     "matrix_a_shape": [2, 2],
     "matrix_b_shape": [2, 2],
-    "result_shape": [2, 2],
-    "compiler_flags": "-O3 -march=native",
-    "libraries": ["rayon"]
+    "result_shape": [2, 2]
   }
 }
 ```
 
-### Output Fields
+## Features
 
-- `result_matrix`: The computed matrix multiplication result
-- `result_hash`: SHA-256 hash of the result for correctness verification
-- `metrics`: Performance metrics
-  - `latency_ms`: Execution time in milliseconds
-  - `throughput_ops_per_sec`: Operations per second
-  - `ops_per_second`: Same as throughput (for compatibility)
-  - `memory_usage_mb`: Estimated memory usage in MB
-- `metadata`: Information about the computation
+- ✅ Matrix Multiplication workload (MatMul)
+- ✅ Multiple precision support (fp32, fp16, int8)
+- ✅ Optimized MatMul implementation
+- ✅ Performance metrics (latency, throughput, ops/sec)
+- ✅ Correctness verification (SHA-256 hash)
+- ✅ Docker container for RISC-V
+- ✅ JSON I/O format
+- ✅ Extensible architecture for future workloads (convolution, attention, inference)
 
-## Implementation Details
+## Docker Details
 
-### Precision Implementations
+- **Base Image**: `ghcr.io/tenstorrent/tt-xla/tt-xla-ird-ubuntu-22-04:latest` (RISC-V)
+- **Binary**: `matmul-solver`
+- **Entrypoint**: Takes `--input` and `--output` arguments
 
-- **fp32**: Optimized implementation with cache-friendly memory access (transposed B matrix)
-- **fp16**: Uses half-precision floating point with conversion to/from fp32
-- **int8**: Quantized implementation with dynamic scaling
+## Building and Pushing to Docker Hub
 
-### Performance Optimizations
+### Option 1: Build on Local Machine (Cross-compilation)
 
-- Cache-friendly memory access patterns
-- Transposed matrix for better cache locality (fp32)
-- Efficient data type conversions (fp16, int8)
+```bash
+# Login to Docker Hub
+docker login
+
+# Build (replace 'yourusername' with your Docker Hub username)
+docker build -t yourusername/matmul-solver:latest .
+
+# Push
+docker push yourusername/matmul-solver:latest
+```
+
+### Option 2: Build on RISC-V Cloud (Recommended)
+
+Building directly on a RISC-V instance is more efficient:
+
+```bash
+# SSH into RISC-V cloud instance
+ssh user@your-riscv-instance
+
+# Clone repo
+git clone YOUR_REPO_URL
+cd YOUR_REPO
+
+# Build
+docker build -t matmul-solver .
+
+# Tag and push to Docker Hub
+docker login
+docker tag matmul-solver yourusername/matmul-solver:latest
+docker push yourusername/matmul-solver:latest
+```
+
+**Note**: Since the image targets RISC-V, building natively on RISC-V hardware ensures proper compatibility and faster builds.
 
 ## Submission Requirements
 
 This implementation includes:
-
 - ✅ Raw metrics (latency, throughput, ops/sec)
 - ✅ Correctness proof (result hash)
 - ✅ Docker container for reproducibility
@@ -161,31 +150,24 @@ This implementation includes:
 
 ## Testing
 
-Create a test input file:
-
 ```bash
-cat > input.json << EOF
-{
-  "matrix_a": [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
-  "matrix_b": [[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]],
-  "precision": "fp32"
-}
-EOF
-```
+# Test with sample input
+cargo run --release --bin matmul-solver
 
-Run the solver:
-
-```bash
-cargo run --release
-```
-
-Check the output:
-
-```bash
+# Check output
 cat output.json
 ```
 
-## License
+## Project Structure
 
-This project is submitted for the Amadeus Genesis Hack competition.
+```
+.
+├── Dockerfile          # RISC-V Docker build
+├── Cargo.toml         # Rust dependencies
+├── src/
+│   ├── main.rs        # CLI entry point
+│   └── lib.rs         # MatMul implementation
+└── README.md          # This file
+```
 
+That's it. Simple benchmark solver ready for submission.

@@ -1,5 +1,5 @@
 use clap::Parser;
-use matmul_solver::{compute_matmul, types};
+use matmul_solver::{compute_workload, types};
 use std::fs;
 
 #[derive(Parser, Debug)]
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input: types::Input = serde_json::from_str(&input_str)?;
     
     // Compute result
-    let output = compute_matmul(input)?;
+    let output = compute_workload(input)?;
     
     // Write output
     let output_str = serde_json::to_string_pretty(&output)?;
