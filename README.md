@@ -2,6 +2,32 @@
 
 Simple MatMul benchmark solver for the Hard Hack competition.
 
+## Alignment with uPoW
+
+This project is aligned with the **Hard Hack** requirements:
+- ✅ **Uses real MatMul workloads** - Aligned with the live uPoW pipeline on Amadeus mainnet
+- ✅ **Benchmarks reflect actual compute** - Same MatMul operations that miners run on mainnet today (not simulations)
+- ✅ **Multiple precisions** - Supports fp32, fp16, int8 (matching uPoW compute requirements)
+- ✅ **Performance metrics** - Latency, throughput, ops/sec for benchmarking
+- ✅ **RISC-V platform** - Built for the target benchmarking platform
+
+### Hard Hack vs. Full Validator PoW
+
+**What this project does (Hard Hack):**
+- Takes matrices as JSON input (plain format for benchmarking)
+- Computes MatMul efficiently
+- Outputs performance metrics and correctness hashes
+- Focuses on **benchmarking the compute workload**
+
+**What validators do (Full PoW protocol):**
+- Build seed from epoch, segment_vr_hash, node_pk, node_pop, solver_pk, nonce
+- Use Blake3 XOF to generate matrices from seed
+- Compute MatMul (same operation we benchmark)
+- Hash solution and check difficulty (leading zeros)
+- Broadcast solution to network
+
+**Key difference:** The Hard Hack benchmarks the **MatMul computation itself** (the core compute workload), not the full PoW protocol. The matrices are provided directly as JSON input rather than generated via Blake3 XOF, which allows for controlled benchmarking of the compute performance.
+
 ## What It Does
 
 Solves benchmark workloads for the Hard Hack competition:
@@ -150,12 +176,74 @@ This implementation includes:
 
 ## Testing
 
+### Running Tests
+
+```bash
+# Run all correctness tests
+cargo test
+
+# Run tests with output
+cargo test -- --nocapture
+
+# Run a specific test
+cargo test test_matmul_fp32_correctness
+```
+
+### Correctness Verification
+
+The project includes comprehensive tests for:
+- ✅ **MatMul correctness** - Verifies results match expected values
+- ✅ **Hash consistency** - Same input always produces same hash
+- ✅ **Precision accuracy** - Tests for fp32, fp16, int8
+- ✅ **Integration tests** - End-to-end workflow verification
+- ✅ **Error handling** - Invalid matrix dimensions
+
+**Verifying correctness programmatically:**
+
+```rust
+use matmul_solver::{verify_correctness, types};
+
+// After computing a result, verify it:
+let is_correct = verify_correctness(
+    &matrix_a,
+    &matrix_b,
+    "fp32",
+    &output.result_hash
+)?;
+```
+
+**Why latency varies between runs:**
+
+Latency measurements can vary due to:
+- **System load** - Other processes using CPU/memory
+- **CPU scheduling** - OS task switching
+- **Cache effects** - First run vs. warm cache
+- **CPU frequency scaling** - Dynamic clock speed
+- **Memory allocation** - Heap fragmentation
+
+For consistent benchmarking:
+- Run multiple iterations and take average/median
+- Use `--release` builds (optimized)
+- Minimize system load
+- Consider using `taskset` to pin CPU affinity
+
+### Manual Testing
+
 ```bash
 # Test with sample input
-cargo run --release --bin matmul-solver
+cargo run --release --bin matmul-solver -- --input input.json --output output.json
 
 # Check output
 cat output.json
+
+# Run comprehensive correctness test script
+./test_correctness.sh
+
+# Verify hash consistency (run multiple times, hash should be identical)
+for i in {1..5}; do
+  cargo run --release --bin matmul-solver -- --input input.json --output output_$i.json
+  echo "Run $i hash: $(jq -r '.result_hash' output_$i.json)"
+done
 ```
 
 ## Project Structure

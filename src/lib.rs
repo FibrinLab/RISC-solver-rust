@@ -266,3 +266,208 @@ pub fn compute_matmul(input: types::Input) -> Result<types::Output, String> {
     compute_workload(input)
 }
 
+/// Verify correctness of a result by recomputing and comparing hashes
+pub fn verify_correctness(
+    matrix_a: &[Vec<f32>],
+    matrix_b: &[Vec<f32>],
+    precision: &str,
+    expected_hash: &str,
+) -> Result<bool, String> {
+    let result = match precision {
+        "fp32" => matmul_fp32_optimized(matrix_a, matrix_b),
+        "fp16" => matmul_fp16(matrix_a, matrix_b),
+        "int8" => matmul_int8(matrix_a, matrix_b),
+        _ => return Err(format!("Unsupported precision: {}", precision)),
+    };
+    
+    let computed_hash = compute_hash(&result);
+    Ok(computed_hash == expected_hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_matmul_fp32_correctness() {
+        let a = vec![
+            vec![1.0, 2.0],
+            vec![3.0, 4.0],
+        ];
+        let b = vec![
+            vec![5.0, 6.0],
+            vec![7.0, 8.0],
+        ];
+        
+        let result = matmul_fp32_optimized(&a, &b);
+        
+        // Expected: [[1*5+2*7, 1*6+2*8], [3*5+4*7, 3*6+4*8]]
+        //          = [[19, 22], [43, 50]]
+        assert_eq!(result[0][0], 19.0);
+        assert_eq!(result[0][1], 22.0);
+        assert_eq!(result[1][0], 43.0);
+        assert_eq!(result[1][1], 50.0);
+    }
+    
+    #[test]
+    fn test_matmul_fp32_hash_consistency() {
+        let a = vec![
+            vec![1.0, 2.0, 3.0],
+            vec![4.0, 5.0, 6.0],
+        ];
+        let b = vec![
+            vec![7.0, 8.0],
+            vec![9.0, 10.0],
+            vec![11.0, 12.0],
+        ];
+        
+        // Compute multiple times - hash should be identical
+        let result1 = matmul_fp32_optimized(&a, &b);
+        let result2 = matmul_fp32_optimized(&a, &b);
+        let result3 = matmul_fp32_optimized(&a, &b);
+        
+        let hash1 = compute_hash(&result1);
+        let hash2 = compute_hash(&result2);
+        let hash3 = compute_hash(&result3);
+        
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash2, hash3);
+    }
+    
+    #[test]
+    fn test_verify_correctness() {
+        let a = vec![
+            vec![1.0, 2.0],
+            vec![3.0, 4.0],
+        ];
+        let b = vec![
+            vec![5.0, 6.0],
+            vec![7.0, 8.0],
+        ];
+        
+        // Compute and get hash
+        let result = matmul_fp32_optimized(&a, &b);
+        let correct_hash = compute_hash(&result);
+        
+        // Verify it matches
+        assert!(verify_correctness(&a, &b, "fp32", &correct_hash).unwrap());
+        
+        // Wrong hash should fail
+        assert!(!verify_correctness(&a, &b, "fp32", "wrong_hash").unwrap());
+    }
+    
+    #[test]
+    fn test_fp16_correctness() {
+        let a = vec![
+            vec![1.0, 2.0],
+            vec![3.0, 4.0],
+        ];
+        let b = vec![
+            vec![5.0, 6.0],
+            vec![7.0, 8.0],
+        ];
+        
+        let result = matmul_fp16(&a, &b);
+        
+        // FP16 should give approximately correct results (may have small precision differences)
+        assert!((result[0][0] - 19.0).abs() < 0.1);
+        assert!((result[0][1] - 22.0).abs() < 0.1);
+        assert!((result[1][0] - 43.0).abs() < 0.1);
+        assert!((result[1][1] - 50.0).abs() < 0.1);
+    }
+    
+    #[test]
+    fn test_int8_correctness() {
+        let a = vec![
+            vec![1.0, 2.0],
+            vec![3.0, 4.0],
+        ];
+        let b = vec![
+            vec![5.0, 6.0],
+            vec![7.0, 8.0],
+        ];
+        
+        let result = matmul_int8(&a, &b);
+        
+        // INT8 should give approximately correct results (quantization may cause differences)
+        assert!((result[0][0] - 19.0).abs() < 1.0);
+        assert!((result[0][1] - 22.0).abs() < 1.0);
+        assert!((result[1][0] - 43.0).abs() < 1.0);
+        assert!((result[1][1] - 50.0).abs() < 1.0);
+    }
+    
+    #[test]
+    fn test_compute_workload_integration() {
+        let input = types::Input {
+            matrix_a: vec![
+                vec![1.0, 2.0],
+                vec![3.0, 4.0],
+            ],
+            matrix_b: vec![
+                vec![5.0, 6.0],
+                vec![7.0, 8.0],
+            ],
+            precision: "fp32".to_string(),
+            workload_type: Some("matmul".to_string()),
+            metadata: None,
+        };
+        
+        let output = compute_workload(input).unwrap();
+        
+        // Check result correctness
+        assert_eq!(output.result_matrix[0][0], 19.0);
+        assert_eq!(output.result_matrix[0][1], 22.0);
+        assert_eq!(output.result_matrix[1][0], 43.0);
+        assert_eq!(output.result_matrix[1][1], 50.0);
+        
+        // Check hash is present
+        assert!(!output.result_hash.is_empty());
+        
+        // Check metrics are reasonable
+        assert!(output.metrics.latency_ms >= 0.0);
+        assert!(output.metrics.ops_per_second > 0.0);
+        
+        // Verify hash matches recomputed hash
+        let input2 = types::Input {
+            matrix_a: vec![
+                vec![1.0, 2.0],
+                vec![3.0, 4.0],
+            ],
+            matrix_b: vec![
+                vec![5.0, 6.0],
+                vec![7.0, 8.0],
+            ],
+            precision: "fp32".to_string(),
+            workload_type: Some("matmul".to_string()),
+            metadata: None,
+        };
+        
+        assert!(verify_correctness(
+            &input2.matrix_a,
+            &input2.matrix_b,
+            &input2.precision,
+            &output.result_hash
+        ).unwrap());
+    }
+    
+    #[test]
+    fn test_matrix_dimension_validation() {
+        let input = types::Input {
+            matrix_a: vec![
+                vec![1.0, 2.0],
+                vec![3.0, 4.0],
+            ],
+            matrix_b: vec![
+                vec![5.0, 6.0], // Wrong dimensions - should be 2x2
+            ],
+            precision: "fp32".to_string(),
+            workload_type: Some("matmul".to_string()),
+            metadata: None,
+        };
+        
+        let result = compute_workload(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("incompatible"));
+    }
+}
+
