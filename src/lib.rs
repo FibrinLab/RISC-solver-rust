@@ -58,25 +58,41 @@ pub mod types {
     }
 }
 
+/// Optimized fp32 matrix multiplication with cache blocking (tiling)
+/// Uses optimized loop order (i -> p -> j) with cache-friendly tiling
+/// Default tile sizes: BM=16, BN=64, BK=64 (tunable for different cache sizes)
 pub fn matmul_fp32_optimized(a: &[Vec<f32>], b: &[Vec<f32>]) -> Vec<Vec<f32>> {
-    let rows_a = a.len();
-    let cols_a = a[0].len();
-    let cols_b = b[0].len();
+    const BM: usize = 16;  // Block size for rows of C
+    const BN: usize = 64;  // Block size for cols of C
+    const BK: usize = 64;  // Block size for reduction dimension
     
-    let mut result = vec![vec![0.0f32; cols_b]; rows_a];
+    let m = a.len();        // rows of A and C
+    let k = a[0].len();     // cols of A, rows of B
+    let n = b[0].len();     // cols of B and C
     
-    // Cache-friendly: transpose B for better memory access
-    let b_transposed: Vec<Vec<f32>> = (0..cols_b)
-        .map(|j| (0..cols_a).map(|i| b[i][j]).collect())
-        .collect();
+    let mut result = vec![vec![0.0f32; n]; m];
     
-    for i in 0..rows_a {
-        for j in 0..cols_b {
-            let mut sum = 0.0f32;
-            for k in 0..cols_a {
-                sum += a[i][k] * b_transposed[j][k];
+    // Cache blocking: block over i (BM), j (BN), and p (BK)
+    for ii in (0..m).step_by(BM) {
+        let i_end = (ii + BM).min(m);
+        for jj in (0..n).step_by(BN) {
+            let j_end = (jj + BN).min(n);
+            for pp in (0..k).step_by(BK) {
+                let p_end = (pp + BK).min(k);
+                
+                // Microkernel on tile: C[ii:i_end, jj:j_end] += A[ii:i_end, pp:p_end] × B[pp:p_end, jj:j_end]
+                // Optimized loop order: i -> p -> j
+                // This streams across B[p, :] (contiguous) and C[i, :] (contiguous)
+                // Hoisting a_ip out of inner loop for better register reuse
+                for i in ii..i_end {
+                    for p in pp..p_end {
+                        let a_ip = a[i][p];
+                        for j in jj..j_end {
+                            result[i][j] += a_ip * b[p][j];
+                        }
+                    }
+                }
             }
-            result[i][j] = sum;
         }
     }
     
@@ -95,19 +111,21 @@ fn matmul_fp16(a: &[Vec<f32>], b: &[Vec<f32>]) -> Vec<Vec<f32>> {
         .map(|row| row.iter().map(|&x| f16::from_f32(x)).collect())
         .collect();
     
-    let rows_a = a_fp16.len();
-    let cols_a = a_fp16[0].len();
-    let cols_b = b_fp16[0].len();
+    let m = a_fp16.len();        // rows of A and C
+    let k = a_fp16[0].len();     // cols of A, rows of B
+    let n = b_fp16[0].len();     // cols of B and C
     
-    let mut result_fp16 = vec![vec![f16::from_f32(0.0); cols_b]; rows_a];
+    let mut result_fp16 = vec![vec![f16::from_f32(0.0); n]; m];
     
-    for i in 0..rows_a {
-        for j in 0..cols_b {
-            let mut sum = f16::from_f32(0.0);
-            for k in 0..cols_a {
-                sum += a_fp16[i][k] * b_fp16[k][j];
+    // Optimized loop order: i -> p -> j
+    // This streams across B[p, :] (contiguous) and C[i, :] (contiguous)
+    // Hoisting a_ip out of inner loop for better register reuse
+    for i in 0..m {
+        for p in 0..k {
+            let a_ip = a_fp16[i][p];
+            for j in 0..n {
+                result_fp16[i][j] += a_ip * b_fp16[p][j];
             }
-            result_fp16[i][j] = sum;
         }
     }
     
@@ -141,19 +159,21 @@ fn matmul_int8(a: &[Vec<f32>], b: &[Vec<f32>]) -> Vec<Vec<f32>> {
             .collect())
         .collect();
     
-    let rows_a = a_int8.len();
-    let cols_a = a_int8[0].len();
-    let cols_b = b_int8[0].len();
+    let m = a_int8.len();        // rows of A and C
+    let k = a_int8[0].len();     // cols of A, rows of B
+    let n = b_int8[0].len();     // cols of B and C
     
-    let mut result_int32 = vec![vec![0i32; cols_b]; rows_a];
+    let mut result_int32 = vec![vec![0i32; n]; m];
     
-    for i in 0..rows_a {
-        for j in 0..cols_b {
-            let mut sum = 0i32;
-            for k in 0..cols_a {
-                sum += a_int8[i][k] as i32 * b_int8[k][j] as i32;
+    // Optimized loop order: i -> p -> j
+    // This streams across B[p, :] (contiguous) and C[i, :] (contiguous)
+    // Hoisting a_ip out of inner loop for better register reuse
+    for i in 0..m {
+        for p in 0..k {
+            let a_ip = a_int8[i][p] as i32;
+            for j in 0..n {
+                result_int32[i][j] += a_ip * b_int8[p][j] as i32;
             }
-            result_int32[i][j] = sum;
         }
     }
     

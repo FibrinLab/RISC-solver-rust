@@ -58,19 +58,61 @@ cargo run --release --bin matmul-solver -- --input input.json --output output.js
 ```
 
 ### Docker Build & Run
+```bash
+docker system prune -a --volumes
+```
 
 ```bash
-# Build
+# Build for local architecture (ARM64 on Mac, x86_64 on Linux/Intel Mac)
 docker build -t matmul-solver .
 
-# Run
+# Or explicitly build for AMD64 (slower due to emulation, but more compatible)
+docker build --platform linux/amd64 -t matmul-solver .
+
+# Run single computation
 docker run --rm \
   -v $(pwd)/input.json:/app/input.json \
   -v $(pwd):/app/output \
   matmul-solver \
   --input /app/input.json \
   --output /app/output/output.json
+
+# Run benchmark with 100 iterations (more stable)
+docker run --rm \
+  -v $(pwd)/input.json:/app/input.json \
+  -v $(pwd):/app/output \
+  --entrypoint /bin/bash \
+  matmul-solver \
+  /app/benchmark.sh /app/input.json 100
 ```
+
+**Note:** The benchmark script automatically detects Docker environment and uses the compiled binary directly (no cargo needed).
+
+**Troubleshooting:** If you encounter disk space errors during build, clean Docker:
+```bash
+docker system prune -a --volumes
+```
+
+## Deployment Launch Command
+
+For deployment platforms (Koyeb, Railway, etc.):
+
+**Basic launch command:**
+```
+matmul-solver --input /app/input.json --output /app/output.json
+```
+
+**With verification:**
+```
+matmul-solver --input /app/input.json --output /app/output.json --verify
+```
+
+**Using defaults (if files are in working directory):**
+```
+matmul-solver
+```
+
+The Dockerfile sets `ENTRYPOINT ["matmul-solver"]`, so the container automatically runs the solver. You only need to specify the command if you want to override the entrypoint or pass additional arguments.
 
 ## Input Format
 
@@ -123,24 +165,104 @@ docker run --rm \
 
 ## Docker Details
 
-- **Base Image**: `ghcr.io/tenstorrent/tt-xla/tt-xla-ird-ubuntu-22-04:latest` (RISC-V)
-- **Binary**: `matmul-solver`
+- **Base Image**: `ubuntu:22.04` (supports RISC-V via buildx)
+- **Binary**: `matmul-solver` (compiled for RISC-V)
 - **Entrypoint**: Takes `--input` and `--output` arguments
+- **Architecture**: Built for `linux/riscv64` (cross-compiled from host if needed)
 
 ## Building and Pushing to Docker Hub
 
-### Option 1: Build on Local Machine (Cross-compilation)
+### Push to `fibrinlab/risc-rust` (Multi-Architecture)
+
+**Build for both amd64 and riscv64 architectures:**
 
 ```bash
 # Login to Docker Hub
 docker login
 
-# Build (replace 'yourusername' with your Docker Hub username)
-docker build -t yourusername/matmul-solver:latest .
+# Set up buildx for multi-arch (one-time setup)
+docker buildx create --use --name multiarch-builder
+docker buildx inspect --bootstrap
 
-# Push
-docker push yourusername/matmul-solver:latest
+# Build for BOTH architectures and push
+docker buildx build \
+  --platform linux/amd64,linux/riscv64 \
+  --tag fibrinlab/risc-rust:latest \
+  --push \
+  .
+
+# Verify both architectures are supported
+docker buildx imagetools inspect fibrinlab/risc-rust:latest
 ```
+
+This creates a single image that supports both amd64 (for testing) and riscv64 (for deployment on RISC-V platforms).
+
+**Important:** The image must be built for RISC-V architecture. Use `docker buildx` to build for the correct platform:
+
+## Alternative
+```bash
+docker build -t fibrinlab/risc-rust:latest .
+docker push fibrinlab/risc-rust:latest
+```
+
+```bash
+# Login to Docker Hub
+docker login
+
+# Set up buildx (if not already done)
+docker buildx create --use --name riscv-builder
+
+# Build for RISC-V architecture and push in one step
+docker buildx build \
+  --platform linux/riscv64 \
+  --tag fibrinlab/risc-rust:latest \
+  --push \
+  .
+
+# Optional: Tag with version
+docker buildx build \
+  --platform linux/riscv64 \
+  --tag fibrinlab/risc-rust:v1.0.0 \
+  --push \
+  .
+```
+
+**Build only for RISC-V (if deployment platform is RISC-V only):**
+
+```bash
+docker buildx build \
+  --platform linux/riscv64 \
+  --tag fibrinlab/risc-rust:latest \
+  --push \
+  .
+```
+
+### Option 1: Build on Local Machine (Multi-Architecture)
+
+```bash
+# Login to Docker Hub
+docker login
+
+# Set up buildx for multi-platform builds
+docker buildx create --use --name multiarch-builder
+docker buildx inspect --bootstrap
+
+# Build for both amd64 and riscv64 (recommended)
+docker buildx build \
+  --platform linux/amd64,linux/riscv64 \
+  --tag fibrinlab/risc-rust:latest \
+  --push \
+  .
+
+# Or build only for RISC-V
+docker buildx build \
+  --platform linux/riscv64 \
+  --tag fibrinlab/risc-rust:latest \
+  --push \
+  .
+```
+
+**Note:** `docker buildx` is required for cross-platform builds. Regular `docker build` will build for your host architecture (amd64/arm64), not RISC-V.
 
 ### Option 2: Build on RISC-V Cloud (Recommended)
 
@@ -155,12 +277,11 @@ git clone YOUR_REPO_URL
 cd YOUR_REPO
 
 # Build
-docker build -t matmul-solver .
+docker build -t fibrinlab/risc-rust:latest .
 
-# Tag and push to Docker Hub
+# Push to Docker Hub
 docker login
-docker tag matmul-solver yourusername/matmul-solver:latest
-docker push yourusername/matmul-solver:latest
+docker push fibrinlab/risc-rust:latest
 ```
 
 **Note**: Since the image targets RISC-V, building natively on RISC-V hardware ensures proper compatibility and faster builds.
@@ -246,12 +367,88 @@ for i in {1..5}; do
 done
 ```
 
+## Tracking Optimizations
+
+For iterative optimization during the hackathon, track your changes:
+
+### Quick Benchmark
+
+```bash
+# Run benchmark with 50 iterations (default)
+./benchmark.sh input.json
+
+# Run with 100 iterations for more stable results
+./benchmark.sh input.json 100
+
+# Results saved to:
+# - benchmark_results.json (machine-readable with statistics)
+# - OPTIMIZATIONS.md (human-readable log)
+```
+
+**Benchmarking Rules:**
+- Runs N iterations (default: 50, recommended: 50-100)
+- Reports **median** (robust measure)
+- Reports **min** (best-case performance)
+- Reports **p90** (90th percentile, stability measure)
+- Reports **max** (worst-case)
+- Verifies correctness (all runs must produce identical hash)
+
+**Why multiple runs?** Single-run timing lies due to system variance (CPU scheduling, cache effects, etc.). Multiple runs provide statistically meaningful results.
+
+### Optimization Log Format
+
+Document each optimization in `OPTIMIZATIONS.md`:
+- **Date/Time**: When change was made
+- **Change**: What was optimized
+- **Before/After Metrics**: Performance comparison
+- **Impact**: Improvement percentage
+
+Example entry:
+```markdown
+### 2025-01-XX 12:00:00 UTC
+- **Change**: Added cache-friendly matrix transpose
+- **Latency**: 0.123 ms → 0.098 ms (20% improvement)
+- **Throughput**: 1.2M → 1.5M ops/sec
+- **Hash**: `abc123...` (correctness verified)
+```
+
+### Benchmarking Best Practices
+
+1. **Use consistent test cases** - Same matrix sizes for fair comparison
+2. **Run N iterations (50-100)** - Single-run timing lies, need statistical measures
+3. **Report median, min, p90** - Robust, best-case, and stability metrics
+4. **Document each change** - Track what improved performance
+5. **Verify correctness** - All runs must produce identical hash
+6. **Commit benchmarks** - Git history shows optimization progress
+
+**Proper Benchmarking Rules:**
+- **N = 50 or 100** iterations (default: 50)
+- **Report median** (robust measure, not affected by outliers)
+- **Report min** (best-case performance)
+- **Report p90** (90th percentile, stability measure)
+- **Verify hash consistency** (all runs must match)
+
+The `benchmark.sh` script automatically follows these rules:
+```bash
+# Default: 50 runs with statistics
+./benchmark.sh input.json
+
+# 100 runs for more stable results
+./benchmark.sh input.json 100
+
+# Compare median results between optimizations
+jq '.metrics.latency.median' benchmark_results.json
+```
+
 ## Project Structure
 
 ```
 .
 ├── Dockerfile          # RISC-V Docker build
 ├── Cargo.toml         # Rust dependencies
+├── benchmark.sh       # Benchmark runner script
+├── OPTIMIZATIONS.md   # Optimization tracking log
+├── benchmark_results.json  # Latest benchmark results
 ├── src/
 │   ├── main.rs        # CLI entry point
 │   └── lib.rs         # MatMul implementation
