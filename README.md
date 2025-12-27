@@ -59,17 +59,77 @@ cargo build --release --no-default-features
 
 ### Docker Build & Run
 
+#### Build Docker Image
+
 ```bash
 # Build for local architecture (ARM64 on Mac, x86_64 on Linux/Intel Mac)
 docker build -t matmul-solver .
 
+# Build for specific architecture (e.g., linux/amd64 for deployment)
+docker buildx build --platform linux/amd64 -t matmul-solver .
+```
+
+#### Run Single Computation
+
+```bash
+# Run with input/output files mounted
+docker run --rm \
+  -v $(pwd)/input_fp32.json:/app/input.json \
+  -v $(pwd):/app/output \
+  matmul-solver \
+  --input /app/input.json --output /app/output/output.json
+
+# Run with verification
+docker run --rm \
+  -v $(pwd)/input_fp32.json:/app/input.json \
+  -v $(pwd):/app/output \
+  matmul-solver \
+  --input /app/input.json --output /app/output/output.json --verify
+```
+
+#### Run Benchmarking (Multiple Iterations)
+
+```bash
+# Run benchmark with 50 iterations (default)
+docker run --rm \
+  -v $(pwd)/input_fp32.json:/app/input.json \
+  -v $(pwd):/app/output \
+  --entrypoint /bin/bash \
+  matmul-solver \
+  /app/benchmark.sh /app/input.json 50
+
 # Run benchmark with 100 iterations (more stable)
 docker run --rm \
-  -v $(pwd)/input.json:/app/input.json \
+  -v $(pwd)/input_fp32.json:/app/input.json \
   -v $(pwd):/app/output \
   --entrypoint /bin/bash \
   matmul-solver \
   /app/benchmark.sh /app/input.json 100
+```
+
+#### Test Different Precisions
+
+```bash
+# Test fp32
+docker run --rm \
+  -v $(pwd)/input_fp32.json:/app/input.json \
+  -v $(pwd):/app/output \
+  matmul-solver \
+  --input /app/input.json --output /app/output/output_fp32.json
+
+# Test fp16
+docker run --rm \
+  -v $(pwd)/input_fp16.json:/app/input.json \
+  -v $(pwd):/app/output \
+  matmul-solver \
+  --input /app/input.json --output /app/output/output_fp16.json
+
+# Test int8
+docker run --rm \
+  -v $(pwd)/input_int8.json:/app/input.json \
+  -v $(pwd):/app/output \
+  matmul-solver \
+  --input /app/input.json --output /app/output/output_int8.json
 ```
 
 **Note:** The benchmark script automatically detects Docker environment and uses the compiled binary directly (no cargo needed).
@@ -81,13 +141,20 @@ docker system prune -a --volumes
 
 ## Deployment Launch Command
 
+For deployment platforms (like Koyeb), use:
+
 **With verification:**
-```
+```bash
 matmul-solver --input /app/input.json --output /app/output.json --verify
 ```
 
-**Using defaults (if files are in working directory):**
+**Without verification:**
+```bash
+matmul-solver --input /app/input.json --output /app/output.json
 ```
+
+**Using defaults (if files are in working directory):**
+```bash
 matmul-solver
 ```
 

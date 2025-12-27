@@ -40,7 +40,7 @@ RUN cargo build --release --bin matmul-solver
 # Runtime stage
 FROM ubuntu:22.04
 
-# Install minimal runtime dependencies
+# Install minimal runtime dependencies + OpenBLAS
 # Clear apt cache first to avoid space issues
 RUN rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
     apt-get -o Acquire::AllowInsecureRepositories=true \
@@ -50,6 +50,7 @@ RUN rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
     ca-certificates \
     jq \
     python3 \
+    libopenblas0 \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* /var/tmp/*
 
