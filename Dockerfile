@@ -71,5 +71,8 @@ RUN chmod +x /app/keep-alive.sh
 # This ensures 'input.json' is available at /app/input.json for Koyeb deployment
 COPY input_fp32.json /app/input.json
 
+# Expose port 8000 for health checks
+EXPOSE 8000
+
 # Set entrypoint to wrapper script (keeps container alive for Koyeb service)
 ENTRYPOINT ["/app/keep-alive.sh"]
