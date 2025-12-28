@@ -63,5 +63,9 @@ COPY --from=builder /app/target/release/matmul-solver /usr/local/bin/matmul-solv
 COPY benchmark.sh /app/benchmark.sh
 RUN chmod +x /app/benchmark.sh
 
+# Copy default input file into the container
+# This ensures 'input.json' is available at /app/input.json for Koyeb deployment
+COPY input_fp32.json /app/input.json
+
 # Set entrypoint
 ENTRYPOINT ["matmul-solver"]
