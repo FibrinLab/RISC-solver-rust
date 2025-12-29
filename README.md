@@ -263,7 +263,7 @@ The `benchmark.sh` script automatically follows these rules:
 # 100 runs for more stable results
 ./benchmark.sh inputs/input.json 100
 # Or with seed:
-./benchmark.sh "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef1234567890" 100 u8i8
+./benchmark.sh deadbeef1234567890abcdef1234567890abcdef1234567890abcdef1234567890 100 u8i8
 
 # Compare median results between optimizations
 jq '.metrics.latency.median' outputs/benchmark_results.json
