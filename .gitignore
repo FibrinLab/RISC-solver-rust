@@ -1,6 +1,6 @@
 target/
 Cargo.lock
-output.json
+outputs/
 *.log
 .DS_Store
 

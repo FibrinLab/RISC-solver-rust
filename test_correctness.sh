@@ -7,7 +7,8 @@ echo "=== MatMul Solver Correctness Tests ==="
 echo ""
 
 # Create a simple test input
-cat > test_input.json << 'EOF'
+mkdir -p inputs outputs
+cat > inputs/test_input.json << 'EOF'
 {
   "matrix_a": [[1.0, 2.0], [3.0, 4.0]],
   "matrix_b": [[5.0, 6.0], [7.0, 8.0]],
@@ -16,12 +17,12 @@ cat > test_input.json << 'EOF'
 EOF
 
 echo "1. Running MatMul computation..."
-cargo run --release --bin matmul-solver -- --input test_input.json --output test_output.json
+cargo run --release --bin matmul-solver -- --input inputs/test_input.json --output outputs/test_output.json
 
 echo ""
 echo "2. Checking result correctness..."
 EXPECTED_RESULT="[[19.0,22.0],[43.0,50.0]]"
-ACTUAL_RESULT=$(jq -c '.result_matrix' test_output.json)
+ACTUAL_RESULT=$(jq -c '.result_matrix' outputs/test_output.json)
 
 if [ "$ACTUAL_RESULT" = "$EXPECTED_RESULT" ]; then
     echo "   ✅ Result is correct!"
@@ -36,8 +37,8 @@ echo ""
 echo "3. Testing hash consistency (running 5 times)..."
 HASHES=()
 for i in {1..5}; do
-    cargo run --release --bin matmul-solver -- --input test_input.json --output "test_output_$i.json" > /dev/null 2>&1
-    HASH=$(jq -r '.result_hash' "test_output_$i.json")
+    cargo run --release --bin matmul-solver -- --input inputs/test_input.json --output "outputs/test_output_$i.json" > /dev/null 2>&1
+    HASH=$(jq -r '.result_hash' "outputs/test_output_$i.json")
     HASHES+=("$HASH")
     echo "   Run $i: $HASH"
 done
@@ -59,5 +60,5 @@ echo ""
 echo "=== All tests passed! ==="
 
 # Cleanup
-rm -f test_input.json test_output*.json
+rm -f inputs/test_input.json outputs/test_output*.json
 

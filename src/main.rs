@@ -7,12 +7,22 @@ use std::time::Instant;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Input JSON file path
-    #[arg(short, long, default_value = "input.json")]
-    input: String,
+    #[arg(short, long)]
+    input: Option<String>,
 
     /// Output JSON file path
-    #[arg(short, long, default_value = "output.json")]
+    #[arg(short, long, default_value = "outputs/output.json")]
     output: String,
+
+    /// Generate matrices from seed (hex string) instead of JSON file
+    /// For seed dimensions: generates 16×50240 × 50240×16 matrices
+    #[arg(long)]
+    seed: Option<String>,
+
+    /// Precision to use (fp32, fp16, int8, u8i8)
+    /// Required when using --seed
+    #[arg(long)]
+    precision: Option<String>,
 
     /// Verify correctness by recomputing and checking hash
     #[arg(long)]
@@ -23,11 +33,41 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
-    // Time input parsing
+    // Time input parsing/generation
     let parse_start = Instant::now();
-    let input_str = fs::read_to_string(&args.input)?;
-    let input: types::Input = serde_json::from_str(&input_str)?;
-    let parse_time_ms = parse_start.elapsed().as_secs_f64() * 1000.0;
+    
+    let (input, parse_time_ms) = if let Some(seed_hex) = args.seed {
+        // Generate matrices from seed
+        let precision = args.precision.ok_or("--precision is required when using --seed")?;
+        
+        // Seed dimensions: 16×50240 × 50240×16
+        let (matrix_a, matrix_b) = matmul_solver::generate_matrices_from_seed_hex(
+            &seed_hex,
+            16,      // rows_a
+            50240,  // cols_a
+            50240,  // rows_b
+            16,     // cols_b
+        )?;
+        
+        let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
+        
+        let input = types::Input {
+            matrix_a,
+            matrix_b,
+            precision,
+            workload_type: Some("matmul".to_string()),
+            metadata: None,
+        };
+        
+        (input, parse_time)
+    } else {
+        // Read from JSON file
+        let input_path = args.input.as_deref().unwrap_or("inputs/input.json");
+        let input_str = fs::read_to_string(input_path)?;
+        let input: types::Input = serde_json::from_str(&input_str)?;
+        let parse_time = parse_start.elapsed().as_secs_f64() * 1000.0;
+        (input, parse_time)
+    };
     
     // Store input data for verification (before moving input)
     let matrix_a = input.matrix_a.clone();

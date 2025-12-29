@@ -1,6 +1,10 @@
 use sha2::{Digest, Sha256};
 use std::time::Instant;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use blake3;
+
+#[cfg(feature = "api")]
+pub mod api;
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
@@ -304,6 +308,52 @@ impl Serialize for FlatMatrix {
     }
 }
 
+/// Generate matrices deterministically from a seed using Blake3 XOF
+/// Matches the PoW specification: seed -> Blake3 XOF -> matrix_a (u8) + matrix_b (i8)
+/// 
+/// Seed format: raw bytes
+/// Returns: (matrix_a as FlatMatrix, matrix_b as FlatMatrix)
+/// 
+/// For seed dimensions: matrix_a is 16×50240 (u8 bytes), matrix_b is 50240×16 (i8 bytes)
+pub fn generate_matrices_from_seed(seed: &[u8], rows_a: usize, cols_a: usize, rows_b: usize, cols_b: usize) -> (FlatMatrix, FlatMatrix) {
+    // Calculate total bytes needed
+    let matrix_a_bytes = rows_a * cols_a;
+    let matrix_b_bytes = rows_b * cols_b;
+    let total_bytes = matrix_a_bytes + matrix_b_bytes;
+    
+    // Use Blake3 XOF to generate deterministic random bytes
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(seed);
+    let mut output_reader = hasher.finalize_xof();
+    
+    // Read all bytes needed for both matrices
+    let mut all_bytes = vec![0u8; total_bytes];
+    output_reader.fill(&mut all_bytes);
+    
+    // Split bytes: first part for matrix_a (u8), second part for matrix_b (i8)
+    let (a_bytes, b_bytes) = all_bytes.split_at(matrix_a_bytes);
+    
+    // Convert matrix_a bytes to f32 (u8: 0-255)
+    // For u8i8, we'll interpret these as u8 directly in the matmul function
+    let matrix_a_data: Vec<f32> = a_bytes.iter().map(|&b| b as f32).collect();
+    
+    // Convert matrix_b bytes to f32 (i8: -128 to 127)
+    // Raw bytes are 0-255, but we interpret as i8 by subtracting 128
+    let matrix_b_data: Vec<f32> = b_bytes.iter().map(|&b| (b.wrapping_sub(128)) as i8 as f32).collect();
+    
+    (
+        FlatMatrix { data: matrix_a_data, rows: rows_a, cols: cols_a },
+        FlatMatrix { data: matrix_b_data, rows: rows_b, cols: cols_b },
+    )
+}
+
+/// Generate matrices from seed hex string (convenience function)
+pub fn generate_matrices_from_seed_hex(seed_hex: &str, rows_a: usize, cols_a: usize, rows_b: usize, cols_b: usize) -> Result<(FlatMatrix, FlatMatrix), String> {
+    let seed_bytes = hex::decode(seed_hex)
+        .map_err(|e| format!("Invalid hex seed: {}", e))?;
+    Ok(generate_matrices_from_seed(&seed_bytes, rows_a, cols_a, rows_b, cols_b))
+}
+
 pub mod types {
     pub use super::FlatMatrix;
     pub use serde::{Deserialize, Serialize};
@@ -318,7 +368,7 @@ pub mod types {
         #[serde(default)]
         pub workload_type: Option<String>, // "matmul", "convolution", "attention", "inference"
         
-        pub precision: String, // "fp32", "fp16", "int8"
+        pub precision: String, // "fp32", "fp16", "int8", "u8i8"
         #[serde(default)]
         pub metadata: Option<InputMetadata>,
         
@@ -695,6 +745,112 @@ fn matmul_int8(a: &FlatMatrix, b: &FlatMatrix) -> FlatMatrix {
     FlatMatrix { data: result_flat, rows: m, cols: n }
 }
 
+/// u8*i8 matrix multiplication (unsigned 8-bit × signed 8-bit)
+/// matrix_a is interpreted as u8 (0-255), matrix_b as i8 (-128 to 127)
+/// This matches the seed workload specification where matrices come from raw binary
+pub fn matmul_u8i8(a: &FlatMatrix, b: &FlatMatrix) -> FlatMatrix {
+    let m = a.rows;
+    let k = a.cols;
+    let n = b.cols;
+    
+    // Convert matrix_a to u8 (unsigned, 0-255)
+    // Input is f32, so we need to map it to u8 range
+    // For raw binary input, bytes are already 0-255, but we're getting f32 from JSON
+    // So we'll interpret f32 values as if they were bytes: clamp to 0-255 and cast
+    let a_u8: Vec<u8> = a.data.iter()
+        .map(|&x| (x.clamp(0.0, 255.0)) as u8)
+        .collect();
+    
+    // Convert matrix_b to i8 (signed, -128 to 127)
+    // For raw binary, bytes are 0-255, but we interpret as i8: subtract 128 to get -128 to 127
+    // For f32 input, we'll map to i8 range
+    let b_i8: Vec<i8> = b.data.iter()
+        .map(|&x| {
+            // Map f32 to i8: if input is 0-255 (like raw bytes), subtract 128
+            // Otherwise, scale and clamp
+            if x >= 0.0 && x <= 255.0 {
+                (x as u8).wrapping_sub(128) as i8
+            } else {
+                (x.clamp(-128.0, 127.0)) as i8
+            }
+        })
+        .collect();
+    
+    let mut result_int32 = vec![0i32; m * n];
+    
+    // Optimized loop order: i -> p -> j
+    // u8 * i8 multiplication: u8 is promoted to i32, i8 is promoted to i32
+    for i in 0..m {
+        let c_base = i * n;
+        let a_base = i * k;
+        for p in 0..k {
+            let a_ip = a_u8[a_base + p] as i32;  // u8 -> i32
+            let b_base = p * n;
+            for j in 0..n {
+                result_int32[c_base + j] += a_ip * b_i8[b_base + j] as i32;  // i8 -> i32
+            }
+        }
+    }
+    
+    // Convert result back to f32 (no scaling needed for u8*i8, result is already correct)
+    let result_flat: Vec<f32> = result_int32.iter()
+        .map(|&x| x as f32)
+        .collect();
+    
+    FlatMatrix { data: result_flat, rows: m, cols: n }
+}
+
+/// Optimized u8*i8 for 16x16 result (seed dimensions: 16×50240 × 50240×16 = 16×16)
+#[inline(always)]
+pub fn matmul_u8i8_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::Duration) {
+    let k = a.cols;  // Should be 50240 for seed dimensions
+    
+    // Convert A to u8, B to i8
+    let a_u8: Vec<u8> = a.data.iter()
+        .map(|&x| (x.clamp(0.0, 255.0)) as u8)
+        .collect();
+    
+    let b_i8: Vec<i8> = b.data.iter()
+        .map(|&x| {
+            if x >= 0.0 && x <= 255.0 {
+                (x as u8).wrapping_sub(128) as i8
+            } else {
+                (x.clamp(-128.0, 127.0)) as i8
+            }
+        })
+        .collect();
+    
+    let mut result_flat = vec![0i32; 16 * 16];
+    let a_ptr = a_u8.as_ptr();
+    let b_ptr = b_i8.as_ptr();
+    let c_ptr = result_flat.as_mut_ptr();
+    
+    let start = Instant::now();
+    
+    unsafe {
+        // Optimized computation for 16×50240 × 50240×16
+        for i in 0..16 {
+            let a_base = i * k;
+            let c_base = i * 16;
+            for p in 0..k {
+                let a_ip = *a_ptr.add(a_base + p) as i32;
+                let b_base = p * 16;
+                for j in 0..16 {
+                    let b_pj = *b_ptr.add(b_base + j) as i32;
+                    *c_ptr.add(c_base + j) += a_ip * b_pj;
+                }
+            }
+        }
+    }
+    
+    let kernel_time = start.elapsed();
+    
+    // Convert to f32
+    let result_f32: Vec<f32> = result_flat.iter().map(|&x| x as f32).collect();
+    
+    (FlatMatrix { data: result_f32, rows: 16, cols: 16 }, kernel_time)
+}
+
 #[inline(always)]
 fn matmul_int8_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::Duration) {
     let k = a.cols;
@@ -868,6 +1024,18 @@ fn compute_matmul_internal(
                 let res = matmul_int8_openblas(&matrix_a, &matrix_b);
                 #[cfg(not(feature = "openblas"))]
                 let res = matmul_int8(&matrix_a, &matrix_b);
+                (res, start.elapsed())
+            };
+            (res, elapsed)
+        },
+        "u8i8" => {
+            // u8*i8: matrix_a as u8 (unsigned), matrix_b as i8 (signed)
+            // Optimized path for seed dimensions (16×50240 × 50240×16 = 16×16)
+            let (res, elapsed) = if matrix_a.rows == 16 && matrix_b.cols == 16 {
+                matmul_u8i8_16x16(&matrix_a, &matrix_b)
+            } else {
+                let start = Instant::now();
+                let res = matmul_u8i8(&matrix_a, &matrix_b);
                 (res, start.elapsed())
             };
             (res, elapsed)

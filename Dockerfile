@@ -33,9 +33,13 @@ WORKDIR /app
 # Copy everything
 COPY . .
 
-# Build the MatMul solver
+# Build the MatMul solver and API server
 # When using --platform linux/riscv64, Docker buildx handles architecture automatically
-RUN cargo build --release --bin matmul-solver
+# Build with api feature
+# Try with OpenBLAS first, fallback to no OpenBLAS if build fails (u8i8 doesn't need it)
+RUN (cargo build --release --bin matmul-solver --features api --bin matmul-api 2>&1) || \
+    (echo "OpenBLAS build failed, building without it..." && \
+     cargo build --release --bin matmul-solver --features api --no-default-features --bin matmul-api)
 
 # Runtime stage
 FROM ubuntu:22.04
@@ -56,8 +60,9 @@ RUN rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
 
 WORKDIR /app
 
-# Copy the binary from builder
+# Copy the binaries from builder
 COPY --from=builder /app/target/release/matmul-solver /usr/local/bin/matmul-solver
+COPY --from=builder /app/target/release/matmul-api /usr/local/bin/matmul-api
 
 # Copy benchmark script (optional, for benchmarking in container)
 COPY benchmark.sh /app/benchmark.sh
@@ -67,9 +72,10 @@ RUN chmod +x /app/benchmark.sh
 COPY keep-alive.sh /app/keep-alive.sh
 RUN chmod +x /app/keep-alive.sh
 
-# Copy default input file into the container
-# This ensures 'input.json' is available at /app/input.json for Koyeb deployment
-COPY input_fp32.json /app/input.json
+# Copy default input file into the container (optional - seed generation doesn't require it)
+# This ensures 'input.json' is available at /app/input.json if needed
+# Note: Seed-based generation (--seed flag) doesn't require input files
+COPY inputs/input_fp32.json /app/input.json
 
 # Expose port 8000 for health checks
 EXPOSE 8000

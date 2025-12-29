@@ -2,14 +2,31 @@
 # Benchmark script to track optimization progress
 # Follows proper benchmarking rules: N runs, report median, min, p90
 # Works both locally (with cargo) and in Docker (with binary)
+# Supports both JSON input files and seed-based generation
 
 set -e
 
-BENCHMARK_INPUT="${1:-input.json}"
+# Parse arguments
+BENCHMARK_INPUT="${1:-inputs/input.json}"
 NUM_RUNS="${2:-50}"  # Default to 50 runs, can override with second arg
-RESULTS_FILE="benchmark_results.json"
+PRECISION="${3:-u8i8}"  # Default precision for seed mode
+RESULTS_FILE="outputs/benchmark_results.json"
 LOG_FILE="OPTIMIZATIONS.md"
 TEMP_DIR="/tmp/bench_$$"
+
+# Detect if using seed (hex string) or input file
+USE_SEED=false
+SEED_VALUE=""
+if [[ "$BENCHMARK_INPUT" =~ ^[0-9a-fA-F]+$ ]] && [ ${#BENCHMARK_INPUT} -ge 32 ]; then
+  # Looks like a hex seed (at least 32 chars)
+  USE_SEED=true
+  SEED_VALUE="$BENCHMARK_INPUT"
+  echo "=== Seed-based benchmark mode ==="
+elif [ ! -f "$BENCHMARK_INPUT" ]; then
+  echo "❌ Error: Input file not found: $BENCHMARK_INPUT"
+  echo "   If using seed, provide a hex string (at least 32 characters)"
+  exit 1
+fi
 
 # Detect if running in Docker or locally
 if [ -f "/usr/local/bin/matmul-solver" ] || [ -f "/app/target/release/matmul-solver" ]; then
@@ -29,7 +46,12 @@ fi
 mkdir -p "$TEMP_DIR"
 
 echo "=== Running Benchmark (N=$NUM_RUNS runs) ==="
-echo "Input: $BENCHMARK_INPUT"
+if [ "$USE_SEED" = true ]; then
+  echo "Seed: $SEED_VALUE"
+  echo "Precision: $PRECISION"
+else
+  echo "Input: $BENCHMARK_INPUT"
+fi
 echo "Iterations: $NUM_RUNS"
 echo ""
 
@@ -46,24 +68,54 @@ for i in $(seq 1 $NUM_RUNS); do
   
   # Run solver (either via cargo or binary)
   if [ "$USE_CARGO" = true ]; then
-    if ! cargo run --release --bin matmul-solver -- \
-      --input "$BENCHMARK_INPUT" \
-      --output "$TEMP_DIR/run_$i.json" \
-      --verify > /dev/null 2>&1; then
-      echo ""
-      echo "❌ Error: Failed to run iteration $i"
-      rm -rf "$TEMP_DIR"
-      exit 1
+    if [ "$USE_SEED" = true ]; then
+      # Seed-based generation
+      if ! cargo run --release --bin matmul-solver -- \
+        --seed "$SEED_VALUE" \
+        --precision "$PRECISION" \
+        --output "$TEMP_DIR/run_$i.json" \
+        --verify > /dev/null 2>&1; then
+        echo ""
+        echo "❌ Error: Failed to run iteration $i"
+        rm -rf "$TEMP_DIR"
+        exit 1
+      fi
+    else
+      # JSON input file
+      if ! cargo run --release --bin matmul-solver -- \
+        --input "$BENCHMARK_INPUT" \
+        --output "$TEMP_DIR/run_$i.json" \
+        --verify > /dev/null 2>&1; then
+        echo ""
+        echo "❌ Error: Failed to run iteration $i"
+        rm -rf "$TEMP_DIR"
+        exit 1
+      fi
     fi
   else
-    if ! "$SOLVER_BIN" \
-      --input "$BENCHMARK_INPUT" \
-      --output "$TEMP_DIR/run_$i.json" \
-      --verify > /dev/null 2>&1; then
-      echo ""
-      echo "❌ Error: Failed to run iteration $i"
-      rm -rf "$TEMP_DIR"
-      exit 1
+    if [ "$USE_SEED" = true ]; then
+      # Seed-based generation
+      if ! "$SOLVER_BIN" \
+        --seed "$SEED_VALUE" \
+        --precision "$PRECISION" \
+        --output "$TEMP_DIR/run_$i.json" \
+        --verify > /dev/null 2>&1; then
+        echo ""
+        echo "❌ Error: Failed to run iteration $i"
+        rm -rf "$TEMP_DIR"
+        exit 1
+      fi
+    else
+      # JSON input file
+      if ! "$SOLVER_BIN" \
+        --input "$BENCHMARK_INPUT" \
+        --output "$TEMP_DIR/run_$i.json" \
+        --verify > /dev/null 2>&1; then
+        echo ""
+        echo "❌ Error: Failed to run iteration $i"
+        rm -rf "$TEMP_DIR"
+        exit 1
+      fi
     fi
   fi
   

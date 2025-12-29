@@ -7,7 +7,7 @@ Simple MatMul benchmark solver for the Hard Hack competition.
 This project is aligned with the **Hard Hack** requirements:
 - ✅ **Uses real MatMul workloads** - Aligned with the live uPoW pipeline on Amadeus mainnet
 - ✅ **Benchmarks reflect actual compute** - Same MatMul operations that miners run on mainnet today (not simulations)
-- ✅ **Multiple precisions** - Supports fp32, fp16, int8 (matching uPoW compute requirements)
+- ✅ **Multiple precisions** - Supports fp32, fp16, int8, **u8i8** (matching uPoW compute requirements)
 - ✅ **Performance metrics** - Latency, throughput, ops/sec for benchmarking
 - ✅ **RISC-V platform** - Built for the target benchmarking platform
 
@@ -25,12 +25,8 @@ This project is aligned with the **Hard Hack** requirements:
 Solves benchmark workloads for the Hard Hack competition:
 
 **Currently Supported:**
-- ✅ **Matrix Multiplication (MatMul)** - All precisions (fp32 (base optimisation), fp16, int8)
-
-Takes JSON input, computes the workload, and outputs:
-- Result data
-- Performance metrics (latency, throughput, ops/sec)
-- Result hash (for correctness verification)
+- ✅ **Matrix Multiplication (MatMul)** - All precisions (fp32, fp16, int8, **u8i8**)
+- ✅ **u8i8 (unsigned × signed)** - Optimized for seed dimensions (16×50240 × 50240×16)
 
 ## Quick Start
 
@@ -40,9 +36,11 @@ Takes JSON input, computes the workload, and outputs:
 # Build
 cargo build --release --bin matmul-solver
 
-# Run
-cargo run --release --bin matmul-solver -- --input input.json --output output.json
+# Run with seed (recommended - no JSON file needed!)
+cargo run --release --bin matmul-solver -- --seed "deadbeef1234..." --precision "u8i8"
 
+# Run with JSON input file
+cargo run --release --bin matmul-solver -- --input inputs/input.json --output outputs/output.json
 
 # Run comprehensive correctness test script
 ./test_correctness.sh
@@ -71,68 +69,47 @@ docker buildx build --platform linux/amd64 -t matmul-solver .
 
 #### Run Single Computation
 
+To run with verification add the --verify flag
+
+**Using seed (recommended - no file mounting needed):**
+```bash
+# Generate matrices from seed (deterministic)
+docker run --rm \
+  -v $(pwd)/outputs:/app/outputs \
+  matmul-solver \
+  --seed "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef1234567890" \
+  --precision "u8i8" \
+  --output /app/outputs/output.json
+```
+
+**Using JSON input file:**
 ```bash
 # Run with input/output files mounted
 docker run --rm \
-  -v $(pwd)/input_fp32.json:/app/input.json \
-  -v $(pwd):/app/output \
+  -v $(pwd)/inputs/input_fp32.json:/app/input.json \
+  -v $(pwd)/outputs:/app/outputs \
   matmul-solver \
-  --input /app/input.json --output /app/output/output.json
-
-# Run with verification
-docker run --rm \
-  -v $(pwd)/input_fp32.json:/app/input.json \
-  -v $(pwd):/app/output \
-  matmul-solver \
-  --input /app/input.json --output /app/output/output.json --verify
+  --input /app/input.json --output /app/outputs/output.json
 ```
 
 #### Run Benchmarking (Multiple Iterations)
 
 ```bash
-# Run benchmark with 50 iterations (default)
+# Run benchmark with seed (recommended - no file mounting needed) with 100 iterations
 docker run --rm \
-  -v $(pwd)/input_fp32.json:/app/input.json \
-  -v $(pwd):/app/output \
+  -v $(pwd)/outputs:/app/outputs \
+  --entrypoint /bin/bash \
+  matmul-solver \
+  -c "/app/benchmark.sh 'deadbeef1234567890abcdef1234567890abcdef1234567890abcdef1234567890' 100 u8i8"
+
+# Run benchmark with JSON input file
+docker run --rm \
+  -v $(pwd)/inputs/input_fp32.json:/app/input.json \
+  -v $(pwd)/outputs:/app/outputs \
   --entrypoint /bin/bash \
   matmul-solver \
   /app/benchmark.sh /app/input.json 50
-
-# Run benchmark with 100 iterations (more stable)
-docker run --rm \
-  -v $(pwd)/input_fp32.json:/app/input.json \
-  -v $(pwd):/app/output \
-  --entrypoint /bin/bash \
-  matmul-solver \
-  /app/benchmark.sh /app/input.json 100
 ```
-
-#### Test Different Precisions
-
-```bash
-# Test fp32
-docker run --rm \
-  -v $(pwd)/input_fp32.json:/app/input.json \
-  -v $(pwd):/app/output \
-  matmul-solver \
-  --input /app/input.json --output /app/output/output_fp32.json
-
-# Test fp16
-docker run --rm \
-  -v $(pwd)/input_fp16.json:/app/input.json \
-  -v $(pwd):/app/output \
-  matmul-solver \
-  --input /app/input.json --output /app/output/output_fp16.json
-
-# Test int8
-docker run --rm \
-  -v $(pwd)/input_int8.json:/app/input.json \
-  -v $(pwd):/app/output \
-  matmul-solver \
-  --input /app/input.json --output /app/output/output_int8.json
-```
-
-**Note:** The benchmark script automatically detects Docker environment and uses the compiled binary directly (no cargo needed).
 
 **Troubleshooting:** If you encounter disk space errors during build, clean Docker:
 ```bash
@@ -141,24 +118,65 @@ docker system prune -a --volumes
 
 ## Deployment Launch Command
 
-For deployment platforms (like Koyeb), use:
+For deployment platforms (like Koyeb), the container runs in **API mode** by default:
 
-**With verification:**
+**API Mode (Default for Koyeb):**
+- The container starts an HTTP API server on port 8000
+- Judges can submit matrices via `POST /compute` endpoint (with `seed` or `matrix_a`/`matrix_b`)
+- Health checks use `GET /health` endpoint
+- Container stays alive and accepts multiple requests
+
+**CLI Mode (One-shot execution):**
+If you want to run the solver once and exit, override the entrypoint:
+
+**Using seed (recommended - no input file needed):**
 ```bash
-matmul-solver --input /app/input.json --output /app/output.json --verify
+matmul-solver --seed "deadbeef1234..." --precision "u8i8" --output /app/outputs/output.json
 ```
 
-**Without verification:**
+**Using JSON input file:**
 ```bash
-matmul-solver --input /app/input.json --output /app/output.json
+matmul-solver --input /app/input.json --output /app/outputs/output.json --verify
 ```
 
-**Using defaults (if files are in working directory):**
+## API Endpoints (for Judges)
+
+When deployed to Koyeb, the service exposes HTTP endpoints:
+
+**POST /compute**
+- Submit matrix computation request
+- Request body: JSON with `matrix_a`, `matrix_b`, `precision` (e.g., "u8i8", "fp32", "fp16", "int8")
+- Response: JSON with `result_matrix`, `result_hash`, `metrics` (including throughput)
+
+**GET /health**
+- Health check endpoint
+- Returns: "OK"
+
+**Example API Request (with seed - recommended):**
 ```bash
-matmul-solver
+curl -X POST http://your-koyeb-url/compute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "seed": "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    "precision": "u8i8"
+  }'
 ```
 
-The Dockerfile sets `ENTRYPOINT ["matmul-solver"]`, so the container automatically runs the solver. You only need to specify the command if you want to override the entrypoint or pass additional arguments.
+**Example API Request (with matrices):**
+```bash
+curl -X POST http://your-koyeb-url/compute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "matrix_a": [[1.0, 2.0], [3.0, 4.0]],
+    "matrix_b": [[5.0, 6.0], [7.0, 8.0]],
+    "precision": "u8i8"
+  }'
+```
+
+**For u8i8 seed dimensions (16×50240 × 50240×16):**
+- Use `seed` field instead of `matrix_a`/`matrix_b` - matrices are generated deterministically from the seed
+- The solver uses Blake3 XOF to generate matrices (matches PoW specification)
+- No need to send large JSON files - just provide a hex seed string
 
 ## Input Format
 
@@ -175,7 +193,9 @@ The Dockerfile sets `ENTRYPOINT ["matmul-solver"]`, so the container automatical
 }
 ```
 
-**Supported precisions:** `fp32`, `fp16`, `int8`
+**Supported precisions:** `fp32`, `fp16`, `int8`, `u8i8`
+
+**Note:** `u8i8` is optimized for the seed workload dimensions (16×50240 × 50240×16 = 16×16 result). This matches the PoW specification where matrices come from raw binary (u8 for matrix_a, i8 for matrix_b).
 
 ## Output Format
 
@@ -228,14 +248,6 @@ let is_correct = verify_correctness(
 )?;
 ```
 
-**Why latency varies between runs:**
-
-For consistent benchmarking:
-- Run multiple iterations and take average/median
-- Use `--release` builds (optimized)
-- Minimize system load
-- Consider using `taskset` to pin CPU affinity
-
 
 ## Tracking Optimizations
 
@@ -245,14 +257,19 @@ For iterative optimization during the hackathon, track your changes:
 
 The `benchmark.sh` script automatically follows these rules:
 ```bash
-# Default: 50 runs with statistics
-./benchmark.sh input.json
+# Using JSON input file (default: 50 runs)
+./benchmark.sh inputs/input.json
 
 # 100 runs for more stable results
-./benchmark.sh input.json 100
+./benchmark.sh inputs/input.json 100
+# Or with seed:
+./benchmark.sh "deadbeef1234567890abcdef1234567890abcdef1234567890abcdef1234567890" 100 u8i8
 
 # Compare median results between optimizations
-jq '.metrics.latency.median' benchmark_results.json
+jq '.metrics.latency.median' outputs/benchmark_results.json
+```
+
+**Note:** The benchmark script automatically detects if the first argument is a seed (hex string) or a file path. For seed mode, provide: `seed_hex [num_runs] [precision]`
 ```
 
 ## Project Structure
