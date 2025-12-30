@@ -570,3 +570,33 @@ Use consistent test cases for fair comparison:
 - **Memory**: 6.1337890625 MB
 - **Hash**: `78badc3e28acab83c741116ae313b1ce71e8681d8c0513b125ba7e9b86027b2a`
 
+
+### 2025-12-29 23:58:12 UTC (N=100 runs)
+- **Precision**: u8i8
+- **Matrix Size**: A=[
+  16,
+  50240
+], B=[
+  50240,
+  16
+]
+- **Latency (ms)**: min=1.733416, median=2.5986455, p90=5.795916, max=8.182916
+- **Throughput (ops/sec)**: min=1571742884.8102558, median=4949286151.5711, p90=6479177770.545914, max=7419707675.480092
+- **Memory**: 6.1337890625 MB
+- **Hash**: `7a302b4ab42d51705f6493a3e362fe3593c7ff6055126b963ce011c743e5a504`
+
+
+### 2025-12-30 00:50:53 UTC (N=100 runs)
+- **Precision**: u8i8
+- **Matrix Size**: A=[
+  16,
+  50240
+], B=[
+  50240,
+  16
+]
+- **Latency (ms)**: min=0.6216659999999999, median=0.9046460000000001, p90=2.015625, max=6.832541999999999
+- **Throughput (ops/sec)**: min=1882379939.9989054, median=14217097985.448772, p90=20672039294.979156, max=20688665617.871975
+- **Memory**: 6.1337890625 MB
+- **Hash**: `b9be249f6495c9f8e98aab5b3dd191357b258c72c4fce343712131a390558de4`
+

@@ -87,6 +87,43 @@ impl Drop for AlignedBufferI8 {
 unsafe impl Send for AlignedBufferI8 {}
 unsafe impl Sync for AlignedBufferI8 {}
 
+struct AlignedBufferU8 {
+    ptr: *mut u8,
+    len: usize,
+    layout: std::alloc::Layout,
+}
+
+impl AlignedBufferU8 {
+    fn new(len: usize, align: usize) -> Self {
+        let layout = std::alloc::Layout::from_size_align(len * std::mem::size_of::<u8>(), align)
+            .expect("aligned layout");
+        let ptr = unsafe { std::alloc::alloc(layout) as *mut u8 };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        Self { ptr, len, layout }
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.ptr as *const u8
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr
+    }
+}
+
+impl Drop for AlignedBufferU8 {
+    fn drop(&mut self) {
+        unsafe {
+            std::alloc::dealloc(self.ptr as *mut u8, self.layout);
+        }
+    }
+}
+
+unsafe impl Send for AlignedBufferU8 {}
+unsafe impl Sync for AlignedBufferU8 {}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct CacheKey {
     ptr: usize,
@@ -628,8 +665,7 @@ fn matmul_fp16_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::
     let a_ptr = a.data.as_ptr();
     let c_ptr = result_flat.as_mut_ptr();
 
-    let mut kernel_time = std::time::Duration::from_secs(0);
-    unsafe {
+    let kernel_time = unsafe {
         let mut a_q = AlignedBufferF32::new(16 * k, 64);
         let a_q_ptr = a_q.as_mut_ptr();
         for i in 0..16 {
@@ -653,8 +689,8 @@ fn matmul_fp16_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::
                 *c_ptr.add(c_base + j) = acc;
             }
         }
-        kernel_time = kernel_start.elapsed();
-    }
+        kernel_start.elapsed()
+    };
 
     (FlatMatrix { data: result_flat, rows: 16, cols: 16 }, kernel_time)
 }
@@ -753,28 +789,10 @@ pub fn matmul_u8i8(a: &FlatMatrix, b: &FlatMatrix) -> FlatMatrix {
     let k = a.cols;
     let n = b.cols;
     
-    // Convert matrix_a to u8 (unsigned, 0-255)
-    // Input is f32, so we need to map it to u8 range
-    // For raw binary input, bytes are already 0-255, but we're getting f32 from JSON
-    // So we'll interpret f32 values as if they were bytes: clamp to 0-255 and cast
-    let a_u8: Vec<u8> = a.data.iter()
-        .map(|&x| (x.clamp(0.0, 255.0)) as u8)
-        .collect();
-    
-    // Convert matrix_b to i8 (signed, -128 to 127)
-    // For raw binary, bytes are 0-255, but we interpret as i8: subtract 128 to get -128 to 127
-    // For f32 input, we'll map to i8 range
-    let b_i8: Vec<i8> = b.data.iter()
-        .map(|&x| {
-            // Map f32 to i8: if input is 0-255 (like raw bytes), subtract 128
-            // Otherwise, scale and clamp
-            if x >= 0.0 && x <= 255.0 {
-                (x as u8).wrapping_sub(128) as i8
-            } else {
-                (x.clamp(-128.0, 127.0)) as i8
-            }
-        })
-        .collect();
+    // For u8i8, assume matrix_a values are 0..255 and matrix_b values are -128..127.
+    // This matches the seed pipeline where bytes are already interpreted as u8/i8.
+    let a_u8: Vec<u8> = a.data.iter().map(|&x| x as u8).collect();
+    let b_i8: Vec<i8> = b.data.iter().map(|&x| x as i8).collect();
     
     let mut result_int32 = vec![0i32; m * n];
     
@@ -804,50 +822,75 @@ pub fn matmul_u8i8(a: &FlatMatrix, b: &FlatMatrix) -> FlatMatrix {
 #[inline(always)]
 pub fn matmul_u8i8_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::Duration) {
     let k = a.cols;  // Should be 50240 for seed dimensions
-    
-    // Convert A to u8, B to i8
-    let a_u8: Vec<u8> = a.data.iter()
-        .map(|&x| (x.clamp(0.0, 255.0)) as u8)
-        .collect();
-    
-    let b_i8: Vec<i8> = b.data.iter()
-        .map(|&x| {
-            if x >= 0.0 && x <= 255.0 {
-                (x as u8).wrapping_sub(128) as i8
-            } else {
-                (x.clamp(-128.0, 127.0)) as i8
-            }
-        })
-        .collect();
-    
-    let mut result_flat = vec![0i32; 16 * 16];
-    let a_ptr = a_u8.as_ptr();
-    let b_ptr = b_i8.as_ptr();
-    let c_ptr = result_flat.as_mut_ptr();
-    
-    let start = Instant::now();
-    
-    unsafe {
-        // Optimized computation for 16×50240 × 50240×16
+
+    let mut result_i32 = vec![0i32; 16 * 16];
+    let c_ptr = result_i32.as_mut_ptr();
+
+    let kernel_time = unsafe {
+        let mut a_u8 = AlignedBufferU8::new(16 * k, 64);
+        let a_u8_ptr = a_u8.as_mut_ptr();
+        let a_ptr = a.data.as_ptr();
         for i in 0..16 {
             let a_base = i * k;
-            let c_base = i * 16;
             for p in 0..k {
-                let a_ip = *a_ptr.add(a_base + p) as i32;
-                let b_base = p * 16;
-                for j in 0..16 {
-                    let b_pj = *b_ptr.add(b_base + j) as i32;
-                    *c_ptr.add(c_base + j) += a_ip * b_pj;
+                *a_u8_ptr.add(a_base + p) = *a_ptr.add(a_base + p) as u8;
+            }
+        }
+
+        let mut b_i8 = AlignedBufferI8::new(k * 16, 64);
+        let b_i8_ptr = b_i8.as_mut_ptr();
+        let b_ptr = b.data.as_ptr();
+        for p in 0..k {
+            let b_base = p * 16;
+            for j in 0..16 {
+                *b_i8_ptr.add(b_base + j) = *b_ptr.add(b_base + j) as i8;
+            }
+        }
+
+        let a_u8_ptr = a_u8.as_ptr();
+        let b_i8_ptr = b_i8.as_ptr();
+
+        let kernel_start = Instant::now();
+        for i in 0..16 {
+            let a_row = a_u8_ptr.add(i * k);
+            let c_base = i * 16;
+            #[cfg(target_arch = "aarch64")]
+            {
+                let mut c0 = vdupq_n_s32(0);
+                let mut c1 = vdupq_n_s32(0);
+                let mut c2 = vdupq_n_s32(0);
+                let mut c3 = vdupq_n_s32(0);
+                for p in 0..k {
+                    let a_ip = *a_row.add(p) as i16;
+                    let b_vec = vld1q_s8(b_i8_ptr.add(p * 16));
+                    let b_low = vmovl_s8(vget_low_s8(b_vec));
+                    let b_high = vmovl_s8(vget_high_s8(b_vec));
+                    c0 = vmlal_n_s16(c0, vget_low_s16(b_low), a_ip);
+                    c1 = vmlal_n_s16(c1, vget_high_s16(b_low), a_ip);
+                    c2 = vmlal_n_s16(c2, vget_low_s16(b_high), a_ip);
+                    c3 = vmlal_n_s16(c3, vget_high_s16(b_high), a_ip);
+                }
+                vst1q_s32(c_ptr.add(c_base), c0);
+                vst1q_s32(c_ptr.add(c_base + 4), c1);
+                vst1q_s32(c_ptr.add(c_base + 8), c2);
+                vst1q_s32(c_ptr.add(c_base + 12), c3);
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                for p in 0..k {
+                    let a_ip = *a_row.add(p) as i32;
+                    let b_base = p * 16;
+                    for j in 0..16 {
+                        let b_pj = *b_i8_ptr.add(b_base + j) as i32;
+                        *c_ptr.add(c_base + j) += a_ip * b_pj;
+                    }
                 }
             }
         }
-    }
-    
-    let kernel_time = start.elapsed();
-    
-    // Convert to f32
-    let result_f32: Vec<f32> = result_flat.iter().map(|&x| x as f32).collect();
-    
+        kernel_start.elapsed()
+    };
+
+    let result_f32: Vec<f32> = result_i32.iter().map(|&x| x as f32).collect();
     (FlatMatrix { data: result_f32, rows: 16, cols: 16 }, kernel_time)
 }
 
@@ -863,8 +906,7 @@ fn matmul_int8_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::
     let a_ptr = a.data.as_ptr();
     let c_ptr = result_flat.as_mut_ptr();
 
-    let mut kernel_time = std::time::Duration::from_secs(0);
-    unsafe {
+    let kernel_time = unsafe {
         let mut a_q = AlignedBufferI8::new(16 * k, 64);
         let a_q_ptr = a_q.as_mut_ptr();
         for i in 0..16 {
@@ -887,8 +929,8 @@ fn matmul_int8_16x16(a: &FlatMatrix, b: &FlatMatrix) -> (FlatMatrix, std::time::
                 *c_ptr.add(c_base + j) = acc as f32 * scale_result;
             }
         }
-        kernel_time = kernel_start.elapsed();
-    }
+        kernel_start.elapsed()
+    };
 
     (FlatMatrix { data: result_flat, rows: 16, cols: 16 }, kernel_time)
 }
@@ -995,8 +1037,7 @@ fn compute_matmul_internal(
     }
     
     // Perform matrix multiplication with timing
-    // For fp32: use kernel-only timing (excludes conversion overhead)
-    // For fp16/int8: use end-to-end timing (conversion is part of the computation)
+    // Fast 16x16 kernels use kernel-only timing; fallback paths include conversion overhead.
     let (result, elapsed) = match precision {
         "fp32" => {
             let (res, kernel_time) = matmul_fp32(&matrix_a, &matrix_b);
